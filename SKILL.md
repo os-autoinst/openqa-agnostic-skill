@@ -357,7 +357,46 @@ unavoidable second SUT.
   exit 0; exit $rc` (see `yama/runtest`).
 
   For pytest-based tests, the resulting python code MUST BE compatible with Python 3.6,
-  so do not use Python 3.7+ only function invocations and features.
+  so do not use Python 3.7+ only function invocations and features. This
+  matters because SLE 15 ships Python 3.6 and SLE 12 ships Python 3.4.
+  f-strings and `subprocess.run` both require Python 3.6+; using them is
+  fine and idiomatic, but they will cause a collection-time `SyntaxError`
+  crash on SLE 12, producing a hard module failure instead of a skip.
+
+  **Platform version guard -- required when the test's schedule reaches
+  SLE 12 or any other platform with Python < 3.6.** Check the
+  `conditional_schedule` sections of every YAML that includes the new
+  module: if any branch reaches a product with Python < 3.6 (SLE 12-SP5,
+  SLE 12-SP3), add a version guard at the top of `runtest` (after
+  `ensure_root`) that skips gracefully rather than crashing at collection:
+
+  ```bash
+  # Skip on Python < 3.6 (SLE 12 ships 3.4; f-strings and subprocess.run
+  # require 3.6+). Emit a JUnit skip result so the module reports clean.
+  py_ver=$(python3 -c "import sys; print('%d%02d' % sys.version_info[:2])" \
+           2>/dev/null || echo "000")
+  if [ "$py_ver" -lt 306 ]; then
+      echo "SKIP: Python 3.6+ required (found $(python3 --version 2>&1))"
+      cat > results.xml <<EOF
+  <?xml version="1.0" encoding="UTF-8"?>
+  <testsuite name="<TestName>" tests="1" skipped="1" failures="0" errors="0">
+    <testcase name="<test_name>" classname="<TestName>">
+      <skipped message="Python 3.6+ required for f-strings and subprocess.run"/>
+    </testcase>
+  </testsuite>
+  EOF
+      exit 0
+  fi
+  ```
+
+  If the module is explicitly scoped to SLE 15+ or newer in its `platform:`
+  metadata and the schedule only reaches those versions, the guard is not
+  needed -- but verify the schedule before omitting it. The concrete failure
+  mode (a collection-time `SyntaxError` on Python 3.4 crashing the entire
+  `pytest` run rather than skipping) was first observed in `testSudo` on
+  SLE 12-SP5 s390x via `mau-extratests2.yaml`, where `sudo_agnostic` sits
+  in the unguarded `schedule:` section that runs on all versions including
+  12-SP5. See os-autoinst-distri-opensuse PR #26742 for the fix.
 
   DO NOT install packages under test in `runtest`
 
